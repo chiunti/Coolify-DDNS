@@ -1,0 +1,107 @@
+services:
+  namecheap-ddns:
+    image: alpine:3.21
+    container_name: namecheap-ddns
+    restart: always
+    labels:
+      - autoheal=true
+    environment:
+      - DDNS_HOST=${DDNS_HOST:-@}
+      - DDNS_DOMAIN=${DDNS_DOMAIN}
+      - DDNS_PASSWORD=${DDNS_PASSWORD}
+      - CHECK_INTERVAL=${CHECK_INTERVAL:-120} # Time between checks in seconds
+    command:
+      - /bin/sh
+      - -c
+      - |
+        # Validate required environment variables
+        if [ -z "$$DDNS_DOMAIN" ] || [ -z "$$DDNS_PASSWORD" ]; then
+          echo "[DDNS] [FATAL] DDNS_DOMAIN and DDNS_PASSWORD are required. Aborting."
+          exit 1
+        fi
+
+        # Install dependencies (grep is already provided by busybox)
+        apk add --no-cache curl bind-tools || { echo "[DDNS] [FATAL] Failed to install dependencies."; exit 1; }
+
+        # Validate CHECK_INTERVAL is a positive integer
+        case "$$CHECK_INTERVAL" in
+          ''|*[!0-9]*)
+            echo "[DDNS] [WARN] Invalid CHECK_INTERVAL '$$CHECK_INTERVAL'. Falling back to 120s."
+            CHECK_INTERVAL=120
+            ;;
+        esac
+
+        # Build the FQDN (Fully Qualified Domain Name)
+        if [ "$$DDNS_HOST" = "@" ] || [ -z "$$DDNS_HOST" ]; then
+          FULL_DOMAIN="$$DDNS_DOMAIN"
+        else
+          FULL_DOMAIN="$$DDNS_HOST.$$DDNS_DOMAIN"
+        fi
+
+        echo "[DDNS] Namecheap Dynamic DNS service started for: $$FULL_DOMAIN"
+
+        # Retrieve the IP currently published in public DNS (Cloudflare resolver) at startup
+        LAST_IP=$$(dig +short @1.1.1.1 "$$FULL_DOMAIN" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$$' | head -n 1)
+
+        if [ -n "$$LAST_IP" ]; then
+          echo "[DDNS] Initial IP resolved from DNS (1.1.1.1): $$LAST_IP"
+        else
+          echo "[DDNS] Could not resolve current IP from public DNS (possible first deploy or no network). Forcing initial sync."
+          LAST_IP=""
+        fi
+
+        while true; do
+          # Heartbeat for the healthcheck: proves the loop is still iterating
+          date +%s > /tmp/ddns_heartbeat
+
+          # 1. Get current public IP with timeout and fallback providers
+          CURRENT_IP=$$(curl -s4 -m 10 https://api.ipify.org 2>/dev/null || \
+                      curl -s4 -m 10 https://ifconfig.me 2>/dev/null || \
+                      curl -s4 -m 10 https://icanhazip.com 2>/dev/null)
+
+          CURRENT_IP=$$(echo "$$CURRENT_IP" | tr -d '[:space:]')
+
+          # 2. Validate the result is a real IPv4 address (guards against error pages/garbage)
+          if ! echo "$$CURRENT_IP" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$$'; then
+            echo "[DDNS] [ALERT] No internet connection or all IP providers failed. Retrying next cycle."
+          else
+            # 3. Compare current public IP against last known record
+            if [ "$$CURRENT_IP" != "$$LAST_IP" ]; then
+              echo "[DDNS] IP change detected: '$$LAST_IP' -> '$$CURRENT_IP'. Notifying Namecheap..."
+
+              RESPONSE=$$(curl -sS -m 15 "https://dynamicdns.park-your-domain.com/update?host=$$DDNS_HOST&domain=$$DDNS_DOMAIN&password=$$DDNS_PASSWORD&ip=$$CURRENT_IP" 2>/dev/null || true)
+
+              if echo "$$RESPONSE" | grep -q "<ErrCount>0</ErrCount>"; then
+                echo "[DDNS] [SUCCESS] Namecheap updated successfully with IP: $$CURRENT_IP"
+                LAST_IP="$$CURRENT_IP"
+              else
+                echo "[DDNS] [ERROR] Namecheap returned an error while updating. Response:"
+                echo "$$RESPONSE"
+              fi
+            else
+              echo "[DDNS] Public IP unchanged ($$CURRENT_IP). No request sent to Namecheap."
+            fi
+          fi
+
+          sleep "$$CHECK_INTERVAL"
+        done
+    healthcheck:
+      # Healthy only if the loop wrote a heartbeat within 2x CHECK_INTERVAL (+120s margin)
+      test: ["CMD-SHELL", "test -f /tmp/ddns_heartbeat && test $$(( $$(date +%s) - $$(cat /tmp/ddns_heartbeat) )) -lt $$(( $${CHECK_INTERVAL:-120} * 2 + 120 ))"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # Docker does not restart containers on "unhealthy" by itself.
+  # autoheal watches via docker.sock and restarts containers labeled autoheal=true.
+  autoheal:
+    image: willfarrell/autoheal:latest
+    container_name: autoheal
+    restart: always
+    environment:
+      - AUTOHEAL_CONTAINER_LABEL=autoheal
+      - AUTOHEAL_INTERVAL=60       # Seconds between unhealthy container sweeps
+      - AUTOHEAL_START_PERIOD=120  # Grace period after container start before restarting it
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
