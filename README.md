@@ -109,6 +109,32 @@ Alternative (only if a subdomain must point to a *different* IP than the apex):
 create an **A + Dynamic DNS** record for it and run another instance of this
 stack with that `DDNS_HOST` — this script manages one host per container.
 
+## Docker Swarm / multi-node (Dokploy)
+
+Dokploy deploys this stack with `docker stack deploy`, so the `deploy:` keys
+apply. Coolify (and plain `docker compose up` anywhere) ignores `deploy:`
+entirely — the same file works in both: single container on the host under
+Coolify, worker-pinned service under Dokploy/Swarm.
+
+- **Workers only:** both services carry `placement.constraints:
+  node.role == worker`, so Swarm never schedules them on the manager. Do **not**
+  `drain` the manager node instead — Dokploy's core services are pinned to
+  `node.role == manager` and draining would evict Dokploy itself.
+- **Availability:** with `replicas: 1` Swarm reschedules the task onto a
+  surviving worker automatically — but you need at least **two workers** for
+  that to matter. For your own apps, use `replicas: 2` + `max_replicas_per_node: 1`
+  so replicas spread across workers and the app survives losing one.
+- **Maintenance:** before powering off a worker, migrate its tasks gracefully:
+  `docker node update --availability drain <worker>` (and `--availability
+  active` when it comes back).
+- **autoheal scope:** it only watches the node it lands on. To cover every
+  node, switch it to `mode: global` and drop the constraint (see the comment in
+  `docker-compose.yaml`).
+- **Stateful apps:** replicas only help stateless services — apps with local
+  volumes need shared storage (NFS, GlusterFS…) before they can fail over.
+
+Verify where tasks landed: `docker service ps <stack>_namecheap-ddns`.
+
 ## Autoheal (auto-restart on unhealthy)
 
 Docker's `restart: always` only handles process exits — a container stuck in an

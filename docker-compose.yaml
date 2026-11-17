@@ -5,6 +5,14 @@ services:
     restart: always
     labels:
       - autoheal=true
+    # Swarm/Dokploy only (ignored by plain `docker compose up`): schedule on
+    # worker nodes, never on the manager. Keep replicas at 1 — a single writer
+    # is enough and Swarm reschedules it automatically if its node dies.
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == worker
     environment:
       - DDNS_HOST=${DDNS_HOST:-@}
       - DDNS_DOMAIN=${DDNS_DOMAIN}
@@ -121,3 +129,13 @@ services:
       - AUTOHEAL_START_PERIOD=120  # Grace period after container start before restarting it
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+    # autoheal only sees the docker.sock of the node it lands on. With a single
+    # worker this is fine; with several workers it only watches its own node.
+    # To cover every node instead, drop the constraint and use `mode: global`
+    # (it would also run on the manager, but only acts on autoheal-labeled
+    # containers anyway).
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == worker
