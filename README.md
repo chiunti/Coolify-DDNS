@@ -89,6 +89,26 @@ docker compose up -d
 docker logs -f namecheap-ddns
 ```
 
+## Subdomains
+
+The updater only manages the single record pointed to by `DDNS_HOST` — other
+records are untouched, so subdomains don't follow the apex IP by themselves.
+
+The easy fix is CNAMEs pointing at the apex. In **Advanced DNS → Host Records**
+add a **CNAME Record** per subdomain (or a `*` wildcard to cover them all):
+
+| Type | Host | Value | Covers |
+|---|---|---|---|
+| CNAME Record | `home` | `example.com` | `home.example.com` |
+| CNAME Record | `*` | `example.com` | every undefined subdomain |
+
+When `@` is updated, every CNAME'd subdomain resolves to the new IP
+automatically — no extra containers needed.
+
+Alternative (only if a subdomain must point to a *different* IP than the apex):
+create an **A + Dynamic DNS** record for it and run another instance of this
+stack with that `DDNS_HOST` — this script manages one host per container.
+
 ## Autoheal (auto-restart on unhealthy)
 
 Docker's `restart: always` only handles process exits — a container stuck in an
