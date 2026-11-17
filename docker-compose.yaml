@@ -69,14 +69,30 @@ services:
             if [ "$$CURRENT_IP" != "$$LAST_IP" ]; then
               echo "[DDNS] IP change detected: '$$LAST_IP' -> '$$CURRENT_IP'. Notifying Namecheap..."
 
-              RESPONSE=$$(curl -sS -m 15 "https://dynamicdns.park-your-domain.com/update?host=$$DDNS_HOST&domain=$$DDNS_DOMAIN&password=$$DDNS_PASSWORD&ip=$$CURRENT_IP" 2>/dev/null || true)
+              # -G + --data-urlencode keeps params safe even if the password
+              # or host ever contains &, =, + or spaces.
+              RESPONSE=$$(curl -sS -m 15 -G "https://dynamicdns.park-your-domain.com/update" \
+                --data-urlencode "host=$$DDNS_HOST" \
+                --data-urlencode "domain=$$DDNS_DOMAIN" \
+                --data-urlencode "password=$$DDNS_PASSWORD" \
+                --data-urlencode "ip=$$CURRENT_IP" 2>/dev/null)
+              CURL_RC=$$?
 
-              if echo "$$RESPONSE" | grep -q "<ErrCount>0</ErrCount>"; then
+              if [ $$CURL_RC -ne 0 ]; then
+                echo "[DDNS] [WARN] Namecheap request failed (curl error $$CURL_RC). Retrying next cycle."
+              elif [ -z "$$RESPONSE" ]; then
+                echo "[DDNS] [WARN] Namecheap returned an empty response. Retrying next cycle."
+              elif echo "$$RESPONSE" | grep -q "<ErrCount>0</ErrCount>"; then
                 echo "[DDNS] [SUCCESS] Namecheap updated successfully with IP: $$CURRENT_IP"
                 LAST_IP="$$CURRENT_IP"
               else
-                echo "[DDNS] [ERROR] Namecheap returned an error while updating. Response:"
-                echo "$$RESPONSE"
+                echo "[DDNS] [ERROR] Namecheap rejected the update:"
+                # Extract the readable fields to single log lines — the raw XML
+                # is multi-line and some log viewers mangle it.
+                echo "$$RESPONSE" | grep -oE '<(ErrCount|Err[0-9]+|Description|ResponseString|ResponseNumber)>[^<]*' \
+                  | sed 's/^<//; s/>/: /' \
+                  | while IFS= read -r line; do echo "[DDNS] [ERROR]   $$line"; done
+                echo "[DDNS] [ERROR] Raw response: $$(echo "$$RESPONSE" | tr '\r\n' ' ')"
               fi
             else
               echo "[DDNS] Public IP unchanged ($$CURRENT_IP). No request sent to Namecheap."

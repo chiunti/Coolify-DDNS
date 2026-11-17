@@ -108,7 +108,8 @@ reports `unhealthy` (after a 120s grace period).
 |---|---|
 | `[FATAL] DDNS_DOMAIN and DDNS_PASSWORD are required` | Missing env vars — set them and redeploy |
 | `[ALERT] No internet connection or all IP providers failed` | Outage or all 3 IP providers unreachable — retries automatically |
-| `[ERROR] Namecheap returned an error ...` | Namecheap rejected the update; the XML response is printed (commonly a wrong `DDNS_PASSWORD` or a record that isn't *A + Dynamic DNS*) |
+| `[WARN] Namecheap request failed (curl error N)` | Couldn't reach `dynamicdns.park-your-domain.com` — check the container's outbound connectivity; retries automatically |
+| `[ERROR] Namecheap rejected the update` | Namecheap answered with `ErrCount > 0`; the extracted `Err1`/`ResponseString` lines give the exact cause. Common ones: `Passwords do not match` → wrong `DDNS_PASSWORD`; `Domain name not found` → `DDNS_DOMAIN` isn't the apex domain or isn't on Namecheap DNS; `No Records updated. A record not Found;` → no *A + Dynamic DNS* record exists for `DDNS_HOST` |
 | Container `unhealthy` | The loop hasn't iterated within `2 × CHECK_INTERVAL + 120s`; inspect with `docker inspect --format '{{json .State.Health}}' namecheap-ddns` |
 
 ## Limitations
